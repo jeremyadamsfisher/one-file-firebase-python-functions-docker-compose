@@ -1,0 +1,53 @@
+# Backend emulation
+version: '3.1'
+services:
+  firebase:
+    ports:
+      - 8001:8001  # emulator interface
+      - 5001:5001  # functions
+      - 8080:8080  # firestore
+      - 9199:9199  # storage
+      - 9099:9099  # auth
+    volumes:
+      - ./functions:/home/node/functions
+    build:
+      context: ./
+      dockerfile_inline: |
+        FROM ubuntu:latest
+        USER root
+        RUN apt-get update \
+          && apt-get install -y curl \
+          && curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
+          && apt-get install -y python3.11 python3.11-venv default-jdk nodejs \
+          && npm install -g npm@latest \
+          && npm install -g firebase-tools
+        RUN mkdir functions && cd functions && python3.11 -m venv venv
+        ADD functions/requirements.txt functions/requirements.txt
+        RUN ./functions/venv/bin/python -m pip install -r functions/requirements.txt
+        ADD firebase.json firestore.rules firestore.indexes.json .firebaserc storage.rules .
+        # Warm start
+        RUN firebase emulators:start & sleep 25 && kill $!
+        ADD functions ./functions
+        CMD firebase emulators:start 
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001"]
+      interval: 5s
+      timeout: 10s
+      retries: 5
+  bootstrap:
+    build:
+      context: ./
+      dockerfile_inline: |
+        FROM node:alpine
+        # https://stackoverflow.com/questions/57534295/npm-err-tracker-idealtree-already-exists-while-creating-the-docker-image-for
+        WORKDIR /usr/app
+        RUN npm i firebase-admin
+    depends_on:
+      firebase:
+        condition: service_healthy
+    volumes:
+      - ./scripts/bootstrap-db.js:/usr/app/bootstrap-db.js
+    environment:
+      - FIREBASE_AUTH_EMULATOR_HOST=firebase:9099
+    working_dir: /app
+    command: node /usr/app/bootstrap-db.js
